@@ -196,7 +196,7 @@ public class BurpExtender implements BurpExtension {
         i_ctrl.add(chkIgnoreMatch);
         i_ctrl.setBorder(BorderFactory.createEmptyBorder(0, 0, 5, 0));
 
-        diy_ignore_jta = new JTextArea("\"error\":\"Bad Request\"\n\"status\":400\nInvalid request\nRequest format error", 10, 10);
+        diy_ignore_jta = new JTextArea("", 10, 10);
         diy_ignore_jta.setEditable(diy_ignore_switch == 0);
         diy_ignore_jta.setBackground(diy_ignore_switch == 1 ? Color.LIGHT_GRAY : Color.WHITE);
         i_panel.add(i_ctrl, BorderLayout.NORTH); i_panel.add(new JScrollPane(diy_ignore_jta), BorderLayout.CENTER);
