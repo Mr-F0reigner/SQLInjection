@@ -7,8 +7,6 @@ import burp.api.montoya.http.handler.*;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.*;
 import burp.api.montoya.http.message.requests.HttpRequest;
-import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
-import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 
@@ -75,7 +73,6 @@ public class BurpExtender implements BurpExtension {
         api.extension().setName("SQLInjection");
         api.userInterface().registerSuiteTab("SQL Injection", createUi());
         api.http().registerHttpHandler(new MyHttpHandler());
-        api.userInterface().registerContextMenuItemsProvider(new MyContextMenuProvider());
         String loadSuccess = """
                 ========================================================================
                   __  __            _____ ___           _                      \s
@@ -512,15 +509,4 @@ public class BurpExtender implements BurpExtension {
         }
     }
 
-    private class MyContextMenuProvider implements ContextMenuItemsProvider {
-        @Override public List<Component> provideContextMenuItems(ContextMenuEvent event) {
-            if (event.selectedRequestResponses().isEmpty()) return null;
-            JMenuItem item = new JMenuItem("Send to xia SQL");
-            item.addActionListener(e -> {
-                String src = event.invocationType().name().contains("REPEATER") ? "REPEATER" : (event.invocationType().name().contains("PROXY") ? "PROXY" : "TARGET");
-                for (HttpRequestResponse rr : event.selectedRequestResponses()) executor.execute(() -> performScan(rr, true, src));
-            });
-            return Collections.singletonList(item);
-        }
-    }
 }
