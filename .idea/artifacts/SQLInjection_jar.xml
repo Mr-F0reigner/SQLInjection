@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" name="SQLInjection:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/SQLInjection_jar</output-path>
+    <root id="archive" name="SQLInjection.jar">
+      <element id="module-output" name="SQLInjection" />
+    </root>
+  </artifact>
+</component>
