@@ -3,14 +3,18 @@ package main;
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.ToolType;
+import burp.api.montoya.extension.ExtensionUnloadingHandler;
 import burp.api.montoya.http.handler.*;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.*;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
+import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 
 import javax.swing.*;
+import javax.swing.border.EmptyBorder;
 import javax.swing.plaf.basic.BasicSplitPaneDivider;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
@@ -26,10 +30,11 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-public class BurpExtender implements BurpExtension {
+public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
     private MontoyaApi api;
 
     private final List<LogEntry> masterLog = new CopyOnWriteArrayList<>();
@@ -49,7 +54,7 @@ public class BurpExtender implements BurpExtension {
     private int diy_payload_1 = 1;
     private int diy_payload_2 = 0;
     private int diy_error_switch = 1;
-    private int diy_ignore_switch = 0; // 默认关闭忽略报文
+    private int diy_ignore_switch = 0;
     private int white_switchs = 0;
     private String white_URL = "";
     private boolean checkCookie = false;
@@ -62,7 +67,6 @@ public class BurpExtender implements BurpExtension {
     private JTable detailTable;
     private HttpRequestEditor requestViewer;
     private HttpResponseEditor responseViewer;
-    private JTextArea log_text;
     private JTextArea payload_jta;
     private JTextArea diy_error_jta;
     private JTextArea diy_ignore_jta;
@@ -73,6 +77,10 @@ public class BurpExtender implements BurpExtension {
         api.extension().setName("SQLInjection");
         api.userInterface().registerSuiteTab("SQL Injection", createUi());
         api.http().registerHttpHandler(new MyHttpHandler());
+        api.userInterface().registerContextMenuItemsProvider(new MyContextMenuProvider());
+
+        api.extension().registerUnloadingHandler(this);
+
         String loadSuccess = """
                 ========================================================================
                   __  __            _____ ___           _                      \s
@@ -81,12 +89,24 @@ public class BurpExtender implements BurpExtension {
                  | |  | | |     _  |  _|| |_| | | |  __/ | (_| | | | |  __/ |  \s
                  |_|  |_|_|    (_) |_|   \\___/|_|  \\___|_|\\__, |_| |_|\\___|_|  \s
                                                           |___/                \s
-                [ SQLInjection v1.1 ] - [ LOAD SUCCESS! ]
-                - Author: Mr.F0reigner
-                - GitHub: https://github.com/Mr-F0reigner/SQLInjection
+                [ SQLInjection v1.3.6 ] - [ LOAD SUCCESS! ]
+                - Fixed: UI Refresh issue when clicking selected rows
                 ========================================================================
                 """;
         api.logging().logToOutput(loadSuccess);
+    }
+
+    @Override
+    public void extensionUnloaded() {
+        api.logging().logToOutput("Unloading extension... shutting down thread pool.");
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+        }
     }
 
     private Component createUi() {
@@ -113,13 +133,23 @@ public class BurpExtender implements BurpExtension {
         detailTable.setAutoResizeMode(JTable.AUTO_RESIZE_LAST_COLUMN);
         setColumnWidth(detailTable, 4, 65, 65, 85);
 
-        JSplitPane tableSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, new JScrollPane(masterTable), new JScrollPane(detailTable));
-        tableSplitPane.setResizeWeight(0.7d);
+        // --- 强制 6.5 : 3.5 比例 ---
+        JScrollPane masterScroll = new JScrollPane(masterTable);
+        JScrollPane detailScroll = new JScrollPane(detailTable);
+
+        masterScroll.setMinimumSize(new Dimension(0, 0));
+        masterScroll.setPreferredSize(new Dimension(0, 0));
+
+        detailScroll.setMinimumSize(new Dimension(0, 0));
+        detailScroll.setPreferredSize(new Dimension(0, 0));
+
+        JSplitPane tableSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, masterScroll, detailScroll);
+        tableSplitPane.setResizeWeight(0.65d);
 
         // 2. 配置面板
         JPanel jps = new JPanel(new GridBagLayout());
         jps.setPreferredSize(new Dimension(FIXED_WIDTH, 400));
-        jps.setMinimumSize(new Dimension(FIXED_WIDTH, 400));
+        jps.setMinimumSize(new Dimension(0, 0));
 
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.fill = GridBagConstraints.HORIZONTAL;
@@ -155,9 +185,9 @@ public class BurpExtender implements BurpExtension {
 
         JTabbedPane tab_diy = new JTabbedPane();
         tab_diy.setPreferredSize(new Dimension(FIXED_WIDTH, 400));
-        tab_diy.setMinimumSize(new Dimension(FIXED_WIDTH, 400));
+        tab_diy.setMinimumSize(new Dimension(0, 0));
 
-        // --- Payload ---
+        // Payload
         JPanel p_panel = new JPanel(new BorderLayout());
         JPanel p_ctrl = new JPanel(new GridBagLayout());
         GridBagConstraints pc = new GridBagConstraints();
@@ -177,7 +207,7 @@ public class BurpExtender implements BurpExtension {
         payload_jta.setBackground(JTextArea_int == 1 ? Color.WHITE : Color.LIGHT_GRAY);
         p_panel.add(p_ctrl, BorderLayout.NORTH); p_panel.add(new JScrollPane(payload_jta), BorderLayout.CENTER);
 
-        // --- Error ---
+        // Error
         JPanel e_panel = new JPanel(new BorderLayout());
         JPanel e_ctrl = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
         JCheckBox chkErrorMatch = new JCheckBox("开启报错信息匹配", diy_error_switch == 1);
@@ -189,7 +219,7 @@ public class BurpExtender implements BurpExtension {
         diy_error_jta.setBackground(diy_error_switch == 1 ? Color.LIGHT_GRAY : Color.WHITE);
         e_panel.add(e_ctrl, BorderLayout.NORTH); e_panel.add(new JScrollPane(diy_error_jta), BorderLayout.CENTER);
 
-        // --- Ignore ---
+        // Ignore
         JPanel i_panel = new JPanel(new BorderLayout());
         JPanel i_ctrl = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
         JCheckBox chkIgnoreMatch = new JCheckBox("开启忽略报文匹配", diy_ignore_switch == 1);
@@ -213,6 +243,8 @@ public class BurpExtender implements BurpExtension {
 
         configVerticalSplit.setTopComponent(jps);
         configVerticalSplit.setBottomComponent(tab_diy);
+        configVerticalSplit.setMinimumSize(new Dimension(0, 0));
+
         leftVerticalSplit.setTopComponent(tableSplitPane);
         leftVerticalSplit.setBottomComponent(messageTabs);
 
@@ -220,7 +252,7 @@ public class BurpExtender implements BurpExtension {
         splitPane.setRightComponent(configVerticalSplit);
         splitPane.setResizeWeight(1.0);
 
-        // --- Listeners ---
+        // Listeners
         chkErrorMatch.addActionListener(e -> {
             boolean sel = chkErrorMatch.isSelected();
             diy_error_switch = sel ? 1 : 0;
@@ -252,39 +284,86 @@ public class BurpExtender implements BurpExtension {
             masterModel.fireTableDataChanged(); detailModel.fireTableDataChanged();
         });
 
-        masterTable.addMouseListener(new MouseAdapter() {
-            @Override public void mousePressed(MouseEvent e) {
-                int row = masterTable.getSelectedRow();
-                if (row != -1 && row < masterLog.size()) {
-                    LogEntry ent = masterLog.get(row);
-                    requestViewer.setRequest(ent.requestResponse.request());
-                    responseViewer.setResponse(ent.requestResponse.response());
-                    detailModel.updateData(ent.dataHash);
-                }
-            }
-        });
-        detailTable.addMouseListener(new MouseAdapter() {
-            @Override public void mousePressed(MouseEvent e) {
-                int row = detailTable.getSelectedRow();
-                if (row != -1) {
-                    LogEntry det = detailModel.getEntryAt(row);
-                    if (det != null) {
-                        requestViewer.setRequest(det.requestResponse.request());
-                        if (det.requestResponse.response() != null) responseViewer.setResponse(det.requestResponse.response());
-                    }
-                }
-            }
-        });
-
         SwingUtilities.invokeLater(() -> {
-            tableSplitPane.setDividerLocation(0.7d);
+            tableSplitPane.setDividerLocation(0.65d);
             leftVerticalSplit.setDividerLocation(400);
             configVerticalSplit.setDividerLocation(400);
-            splitPane.setDividerLocation(1.0d);
+            splitPane.setDividerLocation(99999);
         });
+
+        // 调用修复后的表格选择绑定
+        bindTableSelection();
 
         addToggleDividerSupport(splitPane);
         return splitPane;
+    }
+
+    // --- 修复的核心代码：解决点击无法刷新面板的问题 ---
+    private void bindTableSelection() {
+        // 定义主表刷新逻辑
+        Runnable updateMasterView = () -> {
+            int row = masterTable.getSelectedRow();
+            if (row != -1 && row < masterLog.size()) {
+                LogEntry ent = masterLog.get(row);
+                requestViewer.setRequest(ent.requestResponse.request());
+                if (ent.requestResponse.response() != null) {
+                    responseViewer.setResponse(ent.requestResponse.response());
+                } else {
+                    responseViewer.setResponse(null);
+                }
+                detailModel.updateData(ent.dataHash);
+            }
+        };
+
+        // Master表：键盘选择监听
+        masterTable.getSelectionModel().addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting()) {
+                updateMasterView.run();
+            }
+        });
+
+        // Master表：鼠标点击监听 (强制刷新，无论是否已选中)
+        masterTable.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (SwingUtilities.isLeftMouseButton(e)) {
+                    updateMasterView.run();
+                }
+            }
+        });
+
+        // 定义详情表刷新逻辑
+        Runnable updateDetailView = () -> {
+            int row = detailTable.getSelectedRow();
+            if (row != -1) {
+                LogEntry det = detailModel.getEntryAt(row);
+                if (det != null) {
+                    requestViewer.setRequest(det.requestResponse.request());
+                    if (det.requestResponse.response() != null) {
+                        responseViewer.setResponse(det.requestResponse.response());
+                    } else {
+                        responseViewer.setResponse(null);
+                    }
+                }
+            }
+        };
+
+        // Detail表：键盘选择监听
+        detailTable.getSelectionModel().addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting()) {
+                updateDetailView.run();
+            }
+        });
+
+        // Detail表：鼠标点击监听 (强制刷新)
+        detailTable.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (SwingUtilities.isLeftMouseButton(e)) {
+                    updateDetailView.run();
+                }
+            }
+        });
     }
 
     private void setColumnWidth(JTable table, int index, int min, int pref, int max) {
@@ -300,10 +379,10 @@ public class BurpExtender implements BurpExtension {
                     @Override public void mouseClicked(MouseEvent e) {
                         if (e.getClickCount() == 2 && SwingUtilities.isLeftMouseButton(e)) {
                             int total = sp.getWidth();
-                            if (total <= 0) total = 1024;
                             int current = sp.getDividerLocation();
-                            if (current >= total - sp.getDividerSize() - 20) {
-                                sp.setDividerLocation(total - FIXED_WIDTH - sp.getDividerSize());
+                            int dSize = sp.getDividerSize();
+                            if (current >= total - dSize - 20) {
+                                sp.setDividerLocation(total - FIXED_WIDTH - dSize);
                             } else {
                                 sp.setDividerLocation(total);
                             }
@@ -333,9 +412,10 @@ public class BurpExtender implements BurpExtension {
         if (url.toLowerCase().matches(".*\\.(jpg|png|gif|css|js|woff|pdf|mp4|ico|svg|jpeg|map)$")) return;
         if (white_switchs == 1 && Arrays.stream(white_URL.split(",")).noneMatch(w -> !w.isEmpty() && url.contains(w))) return;
 
-        // --- 优化1：结构化指纹去重 ---
-        String cleanUrl = url.contains("?") ? url.substring(0, url.indexOf("?")) : url;
         String sortedParams = getSortedParamKeys(base.request());
+        if (sortedParams.isEmpty()) return;
+
+        String cleanUrl = url.contains("?") ? url.substring(0, url.indexOf("?")) : url;
         String hash = calculateMd5(base.request().method() + cleanUrl + sortedParams);
 
         if (!force && processedHashes.contains(hash)) return;
@@ -379,18 +459,20 @@ public class BurpExtender implements BurpExtension {
             }
         }
         if (!masterEntry.status.contains("✔")) masterEntry.status = "end";
-        SwingUtilities.invokeLater(() -> { masterModel.fireTableDataChanged(); detailModel.fireTableDataChanged(); });
+
+        SwingUtilities.invokeLater(() -> {
+            masterModel.fireTableDataChanged();
+            detailModel.refresh();
+        });
     }
 
     private String analyze(HttpRequestResponse base, HttpRequestResponse attack, String p, List<Pattern> errorRules, List<Pattern> ignoreRules) {
         String body = attack.response().bodyToString();
-        // 忽略检测
         if (diy_ignore_switch == 1) {
             for (Pattern pattern : ignoreRules) {
                 if (pattern.matcher(body).find()) return "Normal";
             }
         }
-        // 报错检测
         if (diy_error_switch == 1) {
             for (Pattern pattern : errorRules) {
                 if (pattern.matcher(body).find()) {
@@ -400,9 +482,9 @@ public class BurpExtender implements BurpExtension {
                 }
             }
         }
-        // Diff 检测
-        if (((p.equals("'") || p.equals("-1")) && base.response().body().length() != attack.response().body().length())) return "✔ Diff";
-        if (((p.equals("''") || p.equals("-0")) && base.response().body().length() == attack.response().body().length())) return "✔ Recovered";
+        if (base.response().body().length() != attack.response().body().length()) {
+            return "✔ Diff";
+        }
         return "Normal";
     }
 
@@ -417,11 +499,9 @@ public class BurpExtender implements BurpExtension {
     }
 
     private String getParamKeys(HttpRequest req) {
-        // 兼容保留
         return getSortedParamKeys(req);
     }
 
-    // --- 新增：参数名排序 ---
     private String getSortedParamKeys(HttpRequest req) {
         List<String> paramNames = new ArrayList<>();
         for (ParsedHttpParameter p : req.parameters()) {
@@ -457,9 +537,19 @@ public class BurpExtender implements BurpExtension {
 
     private class DetailTableModel extends AbstractTableModel {
         private final List<LogEntry> displayedDetail = new ArrayList<>();
+        private String currentHash = null;
+
         public void updateData(String hash) {
+            this.currentHash = hash;
+            refresh();
+        }
+
+        public void refresh() {
+            if (currentHash == null) return;
             displayedDetail.clear();
-            for (LogEntry de : detailLog) { if (de.dataHash != null && de.dataHash.equals(hash)) displayedDetail.add(de); }
+            for (LogEntry de : detailLog) {
+                if (de.dataHash != null && de.dataHash.equals(currentHash)) displayedDetail.add(de);
+            }
             displayedDetail.sort((o1, o2) -> {
                 if (o1.status.equals("Normal") && !o2.status.equals("Normal")) return 1;
                 if (!o1.status.equals("Normal") && o2.status.equals("Normal")) return -1;
@@ -467,6 +557,7 @@ public class BurpExtender implements BurpExtension {
             });
             fireTableDataChanged();
         }
+
         public LogEntry getEntryAt(int row) { return (row >= 0 && row < displayedDetail.size()) ? displayedDetail.get(row) : null; }
         @Override public int getRowCount() { return displayedDetail.size(); }
         @Override public int getColumnCount() { return 6; }
@@ -509,4 +600,15 @@ public class BurpExtender implements BurpExtension {
         }
     }
 
+    private class MyContextMenuProvider implements ContextMenuItemsProvider {
+        @Override public List<Component> provideContextMenuItems(ContextMenuEvent event) {
+            if (event.selectedRequestResponses().isEmpty()) return null;
+            JMenuItem item = new JMenuItem("Send to xia SQL");
+            item.addActionListener(e -> {
+                String src = event.invocationType().name().contains("REPEATER") ? "REPEATER" : (event.invocationType().name().contains("PROXY") ? "PROXY" : "TARGET");
+                for (HttpRequestResponse rr : event.selectedRequestResponses()) executor.execute(() -> performScan(rr, true, src));
+            });
+            return Collections.singletonList(item);
+        }
+    }
 }
