@@ -40,7 +40,7 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
     private final List<LogEntry> masterLog = new CopyOnWriteArrayList<>();
     private final List<LogEntry> detailLog = new CopyOnWriteArrayList<>();
     private final Set<String> processedHashes = Collections.synchronizedSet(new HashSet<>());
-    private final ExecutorService executor = Executors.newFixedThreadPool(10);
+    private ExecutorService executor = Executors.newFixedThreadPool(10);
 
     // --- 强制布局常量 ---
     private final int FIXED_WIDTH = 260;
@@ -280,8 +280,22 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
         chkSpaceEnc.addActionListener(e -> diy_payload_1 = chkSpaceEnc.isSelected() ? 1 : 0);
         chkValEmpty.addActionListener(e -> diy_payload_2 = chkValEmpty.isSelected() ? 1 : 0);
         btnClear.addActionListener(e -> {
-            masterLog.clear(); detailLog.clear(); processedHashes.clear();
-            masterModel.fireTableDataChanged(); detailModel.fireTableDataChanged();
+            // 1. 清空数据
+            masterLog.clear();
+            detailLog.clear();
+            processedHashes.clear();
+            masterModel.fireTableDataChanged();
+            detailModel.fireTableDataChanged();
+
+            // 2. 核心修复：安全地重启线程池
+            // 先尝试停止当前所有正在运行的任务
+            executor.shutdownNow();
+
+            // 【重要】必须创建一个新的线程池实例，否则之前的 shutdown 会导致后续任务报错
+            executor = Executors.newFixedThreadPool(10);
+
+            // 提示用户
+            api.logging().logToOutput("List cleared and thread pool restarted.");
         });
 
         SwingUtilities.invokeLater(() -> {
@@ -433,7 +447,19 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
 
         List<Pattern> ignoreRules = new ArrayList<>();
         if (diy_ignore_switch == 1) {
-            ignoreRules = Arrays.stream(diy_ignore_jta.getText().split("\n")).filter(r -> !r.trim().isEmpty()).map(r -> Pattern.compile(r, Pattern.CASE_INSENSITIVE)).collect(Collectors.toList());
+            ignoreRules = Arrays.stream(diy_ignore_jta.getText().split("\n"))
+                    .map(String::trim) // <--- 【关键修改1】必须先对每个字符串做 trim，去掉首尾空格和 \r
+                    .filter(r -> !r.isEmpty())
+                    .map(r -> {
+                        try {
+                            // 编译正则
+                            return Pattern.compile(r, Pattern.CASE_INSENSITIVE);
+                        } catch (Exception e) {
+                            return null; // 防止错误正则导致报错
+                        }
+                    })
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList());
         }
 
         for (ParsedHttpParameter param : base.request().parameters()) {
@@ -467,7 +493,7 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
     }
 
     private String analyze(HttpRequestResponse base, HttpRequestResponse attack, String p, List<Pattern> errorRules, List<Pattern> ignoreRules) {
-        String body = attack.response().bodyToString();
+        String body = new String(attack.response().body().getBytes(), StandardCharsets.UTF_8);
         if (diy_ignore_switch == 1) {
             for (Pattern pattern : ignoreRules) {
                 if (pattern.matcher(body).find()) return "Normal";
