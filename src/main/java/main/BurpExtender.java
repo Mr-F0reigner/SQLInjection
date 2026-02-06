@@ -12,14 +12,21 @@ import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
+import burp.api.montoya.ui.hotkey.HotKey;
+import burp.api.montoya.ui.hotkey.HotKeyContext;
+import burp.api.montoya.ui.hotkey.HotKeyHandler;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.plaf.basic.BasicSplitPaneDivider;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.TableColumn;
 import java.awt.*;
+import java.awt.datatransfer.Clipboard;
+import java.awt.datatransfer.DataFlavor;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseListener;
@@ -42,6 +49,9 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
     private final Set<String> processedHashes = Collections.synchronizedSet(new HashSet<>());
     private ExecutorService executor = Executors.newFixedThreadPool(10);
 
+    // 用于存储动态加载的忽略规则 (线程安全)
+    private final List<Pattern> cachedIgnoreRules = new CopyOnWriteArrayList<>();
+
     // --- 强制布局常量 ---
     private final int FIXED_WIDTH = 260;
 
@@ -54,7 +64,7 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
     private int diy_payload_1 = 1;
     private int diy_payload_2 = 0;
     private int diy_error_switch = 1;
-    private int diy_ignore_switch = 0;
+    // diy_ignore_switch 已移除，默认开启
     private int white_switchs = 0;
     private String white_URL = "";
     private boolean checkCookie = false;
@@ -89,11 +99,39 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
                  | |  | | |     _  |  _|| |_| | | |  __/ | (_| | | | |  __/ |  \s
                  |_|  |_|_|    (_) |_|   \\___/|_|  \\___|_|\\__, |_| |_|\\___|_|  \s
                                                           |___/                \s
-                [ SQLInjection v1.3.6 ] - [ LOAD SUCCESS! ]
-                - Fixed: UI Refresh issue when clicking selected rows
+                [ SQLInjection v1.3.8 ] - [ LOAD SUCCESS! ]
+                - Fixed: Detail table not clearing immediately
                 ========================================================================
                 """;
         api.logging().logToOutput(loadSuccess);
+        registerIgnoreHotkey();
+    }
+
+    private void registerIgnoreHotkey() {
+        HotKey hotKey = HotKey.hotKey("Paste Clipboard to Ignore List", "Ctrl+Alt+Shift+F12");
+        HotKeyHandler handler = event -> {
+            try {
+                Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
+                if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) {
+                    String clipboardText = (String) clipboard.getData(DataFlavor.stringFlavor);
+                    if (clipboardText != null && !clipboardText.isEmpty()) {
+                        SwingUtilities.invokeLater(() -> {
+                            String currentText = diy_ignore_jta.getText();
+                            if (!currentText.contains(clipboardText)) {
+                                if (!currentText.isEmpty() && !currentText.endsWith("\n")) {
+                                    diy_ignore_jta.append("\n");
+                                }
+                                diy_ignore_jta.append(clipboardText);
+                                api.logging().logToOutput("已从剪切板添加忽略规则: " + clipboardText);
+                            }
+                        });
+                    }
+                }
+            } catch (Exception ex) {
+                api.logging().logToError("读取剪切板失败: " + ex.getMessage());
+            }
+        };
+        api.userInterface().registerHotKeyHandler(HotKeyContext.HTTP_MESSAGE_EDITOR, hotKey, handler);
     }
 
     @Override
@@ -133,13 +171,11 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
         detailTable.setAutoResizeMode(JTable.AUTO_RESIZE_LAST_COLUMN);
         setColumnWidth(detailTable, 4, 65, 65, 85);
 
-        // --- 强制 6.5 : 3.5 比例 ---
         JScrollPane masterScroll = new JScrollPane(masterTable);
         JScrollPane detailScroll = new JScrollPane(detailTable);
 
         masterScroll.setMinimumSize(new Dimension(0, 0));
         masterScroll.setPreferredSize(new Dimension(0, 0));
-
         detailScroll.setMinimumSize(new Dimension(0, 0));
         detailScroll.setPreferredSize(new Dimension(0, 0));
 
@@ -187,53 +223,67 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
         tab_diy.setPreferredSize(new Dimension(FIXED_WIDTH, 400));
         tab_diy.setMinimumSize(new Dimension(0, 0));
 
-        // Payload
+        // Payload Panel
         JPanel p_panel = new JPanel(new BorderLayout());
         JPanel p_ctrl = new JPanel(new GridBagLayout());
         GridBagConstraints pc = new GridBagConstraints();
         pc.fill = GridBagConstraints.HORIZONTAL; pc.gridx = 0; pc.gridy = 0; pc.weightx = 1.0; pc.insets = new Insets(0, 5, 0, 5);
-
         JCheckBox chkCustomPay = new JCheckBox("自定义payload", JTextArea_int == 1);
         JCheckBox chkSpaceEnc = new JCheckBox("空格url编码", diy_payload_1 == 1);
         JCheckBox chkValEmpty = new JCheckBox("参数值置空", diy_payload_2 == 1);
         JButton btnLoadPay = new JButton("加载Payload");
-
         p_ctrl.add(chkCustomPay, pc); pc.gridy++; p_ctrl.add(chkSpaceEnc, pc); pc.gridy++;
         p_ctrl.add(chkValEmpty, pc); pc.gridy++; p_ctrl.add(btnLoadPay, pc);
         p_ctrl.setBorder(BorderFactory.createEmptyBorder(0, 0, 5, 0));
-
         payload_jta = new JTextArea("%df' and sleep(3)%23\n'and '1'='1", 10, 10);
         payload_jta.setEditable(JTextArea_int == 1);
         payload_jta.setBackground(JTextArea_int == 1 ? Color.WHITE : Color.LIGHT_GRAY);
         p_panel.add(p_ctrl, BorderLayout.NORTH); p_panel.add(new JScrollPane(payload_jta), BorderLayout.CENTER);
 
-        // Error
+        // Error Panel
         JPanel e_panel = new JPanel(new BorderLayout());
         JPanel e_ctrl = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
         JCheckBox chkErrorMatch = new JCheckBox("开启报错信息匹配", diy_error_switch == 1);
         e_ctrl.add(chkErrorMatch);
         e_ctrl.setBorder(BorderFactory.createEmptyBorder(0, 0, 5, 0));
-
         diy_error_jta = new JTextArea("ORA-\\d{5}\nSQL syntax.*?MySQL\nUnknown column\nSQL syntax\njava.sql.SQLSyntaxErrorException\nError SQL:\nSyntax error\n附近有语法错误\njava.sql.SQLException\n引号不完整\nSystem.Exception: SQL Execution Error!\ncom.mysql.jdbc\nMySQLSyntaxErrorException\nvalid MySQL result\nyour MySQL server version\nMySqlClient\nMySqlException\nvalid PostgreSQL result\nPG::SyntaxError:\norg.postgresql.jdbc\nPSQLException\nMicrosoft SQL Native Client error\nODBC SQL Server Driver\nSQLServer JDBC Driver\ncom.jnetdirect.jsql\nmacromedia.jdbc.sqlserver\ncom.microsoft.sqlserver.jdbc\nMicrosoft Access\nAccess Database Engine\nODBC Microsoft Access\nOracle error\nDB2 SQL error\nSQLite error\nSybase message\nSybSQLException", 10, 10);
         diy_error_jta.setEditable(diy_error_switch == 0);
         diy_error_jta.setBackground(diy_error_switch == 1 ? Color.LIGHT_GRAY : Color.WHITE);
         e_panel.add(e_ctrl, BorderLayout.NORTH); e_panel.add(new JScrollPane(diy_error_jta), BorderLayout.CENTER);
 
-        // Ignore
+        // Ignore Panel
         JPanel i_panel = new JPanel(new BorderLayout());
-        JPanel i_ctrl = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
-        JCheckBox chkIgnoreMatch = new JCheckBox("开启忽略报文匹配", diy_ignore_switch == 1);
-        i_ctrl.add(chkIgnoreMatch);
-        i_ctrl.setBorder(BorderFactory.createEmptyBorder(0, 0, 5, 0));
-
+        JPanel i_header = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
+        i_header.add(new JLabel("忽略规则列表 (实时生效):"));
+        i_header.setBorder(BorderFactory.createEmptyBorder(0, 0, 5, 0));
         diy_ignore_jta = new JTextArea("", 10, 10);
-        diy_ignore_jta.setEditable(diy_ignore_switch == 0);
-        diy_ignore_jta.setBackground(diy_ignore_switch == 1 ? Color.LIGHT_GRAY : Color.WHITE);
-        i_panel.add(i_ctrl, BorderLayout.NORTH); i_panel.add(new JScrollPane(diy_ignore_jta), BorderLayout.CENTER);
+        diy_ignore_jta.setEditable(true);
+        diy_ignore_jta.setBackground(Color.WHITE);
+        diy_ignore_jta.getDocument().addDocumentListener(new DocumentListener() {
+            private void updateRules() {
+                executor.execute(() -> {
+                    List<Pattern> newRules = new ArrayList<>();
+                    String[] lines = diy_ignore_jta.getText().split("\n");
+                    for (String line : lines) {
+                        String cleanLine = line.trim();
+                        if (!cleanLine.isEmpty()) {
+                            try { newRules.add(Pattern.compile(cleanLine, Pattern.CASE_INSENSITIVE)); } catch (Exception e) { }
+                        }
+                    }
+                    cachedIgnoreRules.clear();
+                    cachedIgnoreRules.addAll(newRules);
+                });
+            }
+            @Override public void insertUpdate(DocumentEvent e) { updateRules(); }
+            @Override public void removeUpdate(DocumentEvent e) { updateRules(); }
+            @Override public void changedUpdate(DocumentEvent e) { updateRules(); }
+        });
+        i_panel.add(i_header, BorderLayout.NORTH);
+        i_panel.add(new JScrollPane(diy_ignore_jta), BorderLayout.CENTER);
 
+        tab_diy.addTab("忽略报文", i_panel);
         tab_diy.addTab("Payload", p_panel);
         tab_diy.addTab("报错特征", e_panel);
-        tab_diy.addTab("忽略报文", i_panel);
 
         requestViewer = api.userInterface().createHttpRequestEditor();
         responseViewer = api.userInterface().createHttpResponseEditor();
@@ -252,7 +302,6 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
         splitPane.setRightComponent(configVerticalSplit);
         splitPane.setResizeWeight(1.0);
 
-        // Listeners
         chkErrorMatch.addActionListener(e -> {
             boolean sel = chkErrorMatch.isSelected();
             diy_error_switch = sel ? 1 : 0;
@@ -265,12 +314,6 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
             payload_jta.setEditable(sel);
             payload_jta.setBackground(sel ? Color.WHITE : Color.LIGHT_GRAY);
         });
-        chkIgnoreMatch.addActionListener(e -> {
-            boolean sel = chkIgnoreMatch.isSelected();
-            diy_ignore_switch = sel ? 1 : 0;
-            diy_ignore_jta.setEditable(!sel);
-            diy_ignore_jta.setBackground(sel ? Color.LIGHT_GRAY : Color.WHITE);
-        });
 
         chkStart.addActionListener(e -> switchs = chkStart.isSelected() ? 1 : 0);
         chkRepeater.addActionListener(e -> clicks_Repeater = chkRepeater.isSelected() ? 1 : 0);
@@ -279,24 +322,31 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
         chkCookie.addActionListener(e -> checkCookie = chkCookie.isSelected());
         chkSpaceEnc.addActionListener(e -> diy_payload_1 = chkSpaceEnc.isSelected() ? 1 : 0);
         chkValEmpty.addActionListener(e -> diy_payload_2 = chkValEmpty.isSelected() ? 1 : 0);
+
+        // ------------------ 修复的核心代码开始 ------------------
         btnClear.addActionListener(e -> {
-            // 1. 清空数据
+            // 1. 清空数据列表
             masterLog.clear();
             detailLog.clear();
             processedHashes.clear();
+
+            // 2. 刷新主表
             masterModel.fireTableDataChanged();
-            detailModel.fireTableDataChanged();
 
-            // 2. 核心修复：安全地重启线程池
-            // 先尝试停止当前所有正在运行的任务
+            // 3. 【重要】彻底清空详情表缓存
+            // 之前这里只是 fireTableDataChanged，但 displayedDetail 还没清空
+            detailModel.clear();
+
+            // 4. 清空底部查看器
+            requestViewer.setRequest(null);
+            responseViewer.setResponse(null);
+
+            // 5. 重启线程池
             executor.shutdownNow();
-
-            // 【重要】必须创建一个新的线程池实例，否则之前的 shutdown 会导致后续任务报错
             executor = Executors.newFixedThreadPool(10);
-
-            // 提示用户
-            api.logging().logToOutput("List cleared and thread pool restarted.");
+            api.logging().logToOutput("List cleared and views reset.");
         });
+        // ------------------ 修复的核心代码结束 ------------------
 
         SwingUtilities.invokeLater(() -> {
             tableSplitPane.setDividerLocation(0.65d);
@@ -305,16 +355,12 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
             splitPane.setDividerLocation(99999);
         });
 
-        // 调用修复后的表格选择绑定
         bindTableSelection();
-
         addToggleDividerSupport(splitPane);
         return splitPane;
     }
 
-    // --- 修复的核心代码：解决点击无法刷新面板的问题 ---
     private void bindTableSelection() {
-        // 定义主表刷新逻辑
         Runnable updateMasterView = () -> {
             int row = masterTable.getSelectedRow();
             if (row != -1 && row < masterLog.size()) {
@@ -328,25 +374,9 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
                 detailModel.updateData(ent.dataHash);
             }
         };
+        masterTable.getSelectionModel().addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) updateMasterView.run(); });
+        masterTable.addMouseListener(new MouseAdapter() { @Override public void mouseClicked(MouseEvent e) { if (SwingUtilities.isLeftMouseButton(e)) updateMasterView.run(); }});
 
-        // Master表：键盘选择监听
-        masterTable.getSelectionModel().addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting()) {
-                updateMasterView.run();
-            }
-        });
-
-        // Master表：鼠标点击监听 (强制刷新，无论是否已选中)
-        masterTable.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
-                if (SwingUtilities.isLeftMouseButton(e)) {
-                    updateMasterView.run();
-                }
-            }
-        });
-
-        // 定义详情表刷新逻辑
         Runnable updateDetailView = () -> {
             int row = detailTable.getSelectedRow();
             if (row != -1) {
@@ -361,23 +391,8 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
                 }
             }
         };
-
-        // Detail表：键盘选择监听
-        detailTable.getSelectionModel().addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting()) {
-                updateDetailView.run();
-            }
-        });
-
-        // Detail表：鼠标点击监听 (强制刷新)
-        detailTable.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
-                if (SwingUtilities.isLeftMouseButton(e)) {
-                    updateDetailView.run();
-                }
-            }
-        });
+        detailTable.getSelectionModel().addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) updateDetailView.run(); });
+        detailTable.addMouseListener(new MouseAdapter() { @Override public void mouseClicked(MouseEvent e) { if (SwingUtilities.isLeftMouseButton(e)) updateDetailView.run(); }});
     }
 
     private void setColumnWidth(JTable table, int index, int min, int pref, int max) {
@@ -425,43 +440,20 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
         String url = base.request().url();
         if (url.toLowerCase().matches(".*\\.(jpg|png|gif|css|js|woff|pdf|mp4|ico|svg|jpeg|map)$")) return;
         if (white_switchs == 1 && Arrays.stream(white_URL.split(",")).noneMatch(w -> !w.isEmpty() && url.contains(w))) return;
-
         String sortedParams = getSortedParamKeys(base.request());
         if (sortedParams.isEmpty()) return;
-
         String cleanUrl = url.contains("?") ? url.substring(0, url.indexOf("?")) : url;
         String hash = calculateMd5(base.request().method() + cleanUrl + sortedParams);
-
         if (!force && processedHashes.contains(hash)) return;
         processedHashes.add(hash);
-
         int masterId = masterLog.size();
         LogEntry masterEntry = new LogEntry(masterId, base, "run……", hash, sourceName);
         masterLog.add(masterEntry);
         SwingUtilities.invokeLater(() -> masterModel.fireTableDataChanged());
-
         List<Pattern> rules = new ArrayList<>();
         if (diy_error_switch == 1) {
             rules = Arrays.stream(diy_error_jta.getText().split("\n")).filter(r -> !r.trim().isEmpty()).map(r -> Pattern.compile(r, Pattern.CASE_INSENSITIVE)).collect(Collectors.toList());
         }
-
-        List<Pattern> ignoreRules = new ArrayList<>();
-        if (diy_ignore_switch == 1) {
-            ignoreRules = Arrays.stream(diy_ignore_jta.getText().split("\n"))
-                    .map(String::trim) // <--- 【关键修改1】必须先对每个字符串做 trim，去掉首尾空格和 \r
-                    .filter(r -> !r.isEmpty())
-                    .map(r -> {
-                        try {
-                            // 编译正则
-                            return Pattern.compile(r, Pattern.CASE_INSENSITIVE);
-                        } catch (Exception e) {
-                            return null; // 防止错误正则导致报错
-                        }
-                    })
-                    .filter(Objects::nonNull)
-                    .collect(Collectors.toList());
-        }
-
         for (ParsedHttpParameter param : base.request().parameters()) {
             if (param.type() == HttpParameterType.URL || param.type() == HttpParameterType.BODY || param.type() == HttpParameterType.JSON || (checkCookie && param.type() == HttpParameterType.COOKIE)) {
                 List<String> payloads = new ArrayList<>(Arrays.asList("'", "''"));
@@ -476,7 +468,7 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
                     HttpRequestResponse attackRes = api.http().sendRequest(attackReq);
                     long duration = System.currentTimeMillis() - start;
                     if (attackRes == null || attackRes.response() == null) continue;
-                    String result = analyze(base, attackRes, p, rules, ignoreRules);
+                    String result = analyze(base, attackRes, p, rules, cachedIgnoreRules);
                     LogEntry det = new LogEntry(masterId, attackRes, result, hash, sourceName);
                     det.parameter = param.name(); det.payload = finalVal; det.duration = duration;
                     detailLog.add(det);
@@ -485,7 +477,6 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
             }
         }
         if (!masterEntry.status.contains("✔")) masterEntry.status = "end";
-
         SwingUtilities.invokeLater(() -> {
             masterModel.fireTableDataChanged();
             detailModel.refresh();
@@ -494,11 +485,7 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
 
     private String analyze(HttpRequestResponse base, HttpRequestResponse attack, String p, List<Pattern> errorRules, List<Pattern> ignoreRules) {
         String body = new String(attack.response().body().getBytes(), StandardCharsets.UTF_8);
-        if (diy_ignore_switch == 1) {
-            for (Pattern pattern : ignoreRules) {
-                if (pattern.matcher(body).find()) return "Normal";
-            }
-        }
+        for (Pattern pattern : ignoreRules) { if (pattern.matcher(body).find()) return "Normal"; }
         if (diy_error_switch == 1) {
             for (Pattern pattern : errorRules) {
                 if (pattern.matcher(body).find()) {
@@ -508,9 +495,7 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
                 }
             }
         }
-        if (base.response().body().length() != attack.response().body().length()) {
-            return "✔ Diff";
-        }
+        if (base.response().body().length() != attack.response().body().length()) { return "✔ Diff"; }
         return "Normal";
     }
 
@@ -524,10 +509,7 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
         } catch (Exception e) { return String.valueOf(in.hashCode()); }
     }
 
-    private String getParamKeys(HttpRequest req) {
-        return getSortedParamKeys(req);
-    }
-
+    private String getParamKeys(HttpRequest req) { return getSortedParamKeys(req); }
     private String getSortedParamKeys(HttpRequest req) {
         List<String> paramNames = new ArrayList<>();
         for (ParsedHttpParameter p : req.parameters()) {
@@ -564,6 +546,13 @@ public class BurpExtender implements BurpExtension, ExtensionUnloadingHandler {
     private class DetailTableModel extends AbstractTableModel {
         private final List<LogEntry> displayedDetail = new ArrayList<>();
         private String currentHash = null;
+
+        // [新增] 核心修复：彻底清空缓存列表的方法
+        public void clear() {
+            this.currentHash = null;
+            this.displayedDetail.clear();
+            fireTableDataChanged();
+        }
 
         public void updateData(String hash) {
             this.currentHash = hash;
